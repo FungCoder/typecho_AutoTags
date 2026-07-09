@@ -4,7 +4,7 @@
  * AutoTags 通过DeepSeek API自动生成文章标签插件
  * @package AutoTags
  * @author 风之翼灵'BLog
- * @version 1.4.6
+ * @version 1.4.7
  * @link http://www.fungj.com
  */
 class AutoTags_Plugin implements Typecho_Plugin_Interface
@@ -48,7 +48,14 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
         $form->addInput($deepseekApiKey);
 
         $contentLength = new Typecho_Widget_Helper_Form_Element_Text('contentLength', NULL, '333', _t('文章正文提取内容长度（字符数），内容长度越大，消耗token数量会越多，请自行选择，默认333字符'));
+        $contentLength->addRule('numeric', _t('内容长度请填写数字'));
         $form->addInput($contentLength);
+
+        $regenerateOnEdit = new Typecho_Widget_Helper_Form_Element_Radio('regenerateOnEdit',
+            array('0' => '否', '1' => '是'), '0',
+            _t('编辑文章时是否重新生成标签'),
+            _t('默认为否，编辑已发布文章时不会重新生成标签，避免覆盖人工调整的标签；选择是则会在编辑时清空旧标签并重新生成'));
+        $form->addInput($regenerateOnEdit);
     }
 
     /**
@@ -72,13 +79,14 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
     public static function generateTags($contents, $widget)
     {
         $options = Typecho_Widget::widget('Widget_Options');
-        $deepseekApiKey = $options->plugin('AutoTags')->deepseekApiKey;
+        $pluginConfig = $options->plugin('AutoTags');
+        $deepseekApiKey = $pluginConfig->deepseekApiKey;
 
         if (empty($deepseekApiKey)) {
             return;
         }
 
-        $cid = !empty($contents['cid']) ? $contents['cid'] : $widget->cid;
+        $cid = !empty($contents['cid']) ? intval($contents['cid']) : intval($widget->cid);
         if (empty($cid)) {
             return;
         }
@@ -93,12 +101,18 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
         $tagCount = !empty($existingTags) ? intval($existingTags->count) : 0;
 
         if ($tagCount > 0) {
-            return;
+            if ($pluginConfig->regenerateOnEdit !== '1') {
+                return;
+            }
+            self::clearTags($cid);
         }
 
         $title = $contents['title'];
-        $contentLength = $options->plugin('AutoTags')->contentLength;
-        $text = mb_substr(strip_tags($contents['text']), 0, $contentLength ?: 333, 'utf-8');
+        $contentLength = intval($pluginConfig->contentLength);
+        if ($contentLength <= 0) {
+            $contentLength = 333;
+        }
+        $text = mb_substr(strip_tags($contents['text']), 0, $contentLength, 'utf-8');
 
         $prompt = "请根据以下文章标题和正文内容，提取关键词作为文章标签。要求：1.标签必须是2-6个字的有效词语；2.标签含义不能重复；3.标签必须是能概括文章标题及正文的关键词；4.随机获取5至10个标签，用逗号','分隔。不要输出任何解释，只输出标签。\n\n标题：{$title}\n\n正文：{$text}";
 
@@ -113,10 +127,6 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
 
         if (empty($tags)) {
             return;
-        }
-
-        if ($tagCount > 0) {
-            self::clearTags($cid);
         }
 
         foreach ($tags as $tag) {
@@ -187,12 +197,14 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
             return;
         }
 
+        $cid = intval($cid);
+
         $tags = Typecho_Db::get()->fetchAll(Typecho_Db::get()->select('mid')->from('table.relationships')->where('cid = ?', $cid));
 
         Typecho_Db::get()->query(Typecho_Db::get()->delete('table.relationships')->where('cid = ?', $cid));
 
         foreach ($tags as $tag) {
-            $mid = $tag['mid'];
+            $mid = intval($tag['mid']);
             Typecho_Db::get()->query("UPDATE " . Typecho_Db::get()->getPrefix() . "metas SET count = count - 1 WHERE mid = " . $mid . " AND count > 0");
         }
     }
@@ -210,8 +222,10 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
             return;
         }
 
-        $mid = Typecho_Db::get()->fetchObject(Typecho_Db::get()->select('mid')->from('table.metas')->where('name = ?', $tag));
-        if (empty($mid)) {
+        $cid = intval($cid);
+
+        $existMeta = Typecho_Db::get()->fetchObject(Typecho_Db::get()->select('mid')->from('table.metas')->where('name = ?', $tag));
+        if (empty($existMeta)) {
             $insertId = Typecho_Db::get()->query(Typecho_Db::get()->insert('table.metas')->rows(array(
                 'name' => $tag,
                 'slug' => Typecho_Common::slugName($tag),
@@ -220,12 +234,12 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
             )));
 
             if ($insertId) {
-                $mid = $insertId;
+                $mid = intval($insertId);
             } else {
                 return;
             }
         } else {
-            $mid = $mid->mid;
+            $mid = intval($existMeta->mid);
             Typecho_Db::get()->query("UPDATE " . Typecho_Db::get()->getPrefix() . "metas SET count = count + 1 WHERE mid = " . $mid . " AND count >= 0");
         }
 
