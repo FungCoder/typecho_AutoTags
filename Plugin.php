@@ -4,7 +4,7 @@
  * AutoTags 通过DeepSeek API自动生成文章标签插件
  * @package AutoTags
  * @author 风之翼灵'BLog
- * @version 1.4.7
+ * @version 1.4.8
  * @link http://www.fungj.com
  */
 class AutoTags_Plugin implements Typecho_Plugin_Interface
@@ -48,7 +48,7 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
         $form->addInput($deepseekApiKey);
 
         $contentLength = new Typecho_Widget_Helper_Form_Element_Text('contentLength', NULL, '333', _t('文章正文提取内容长度（字符数），内容长度越大，消耗token数量会越多，请自行选择，默认333字符'));
-        $contentLength->addRule('numeric', _t('内容长度请填写数字'));
+        $contentLength->addRule('isInteger', _t('内容长度请填写数字'));
         $form->addInput($contentLength);
 
         $regenerateOnEdit = new Typecho_Widget_Helper_Form_Element_Radio('regenerateOnEdit',
