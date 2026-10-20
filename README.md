@@ -1,74 +1,67 @@
-# AutoTags自动标签生成插件 v1.4.8
+# AutoTags 自动标签生成插件 v1.5.0
 
-## 功能描述
+AutoTags 是 Typecho 插件。发布文章时，它会提取标题和部分正文，调用所选模型生成标签，并添加到文章中。支持 DeepSeek Flash 和 MiniMax-M3.1-Flash。
 
-AutoTags是一个Typecho插件，能够自动根据文章内容生成标签。它通过调用DeepSeek API分析文章内容，提取关键词作为标签，并自动添加到文章中。
+## 安装与升级
 
-**仅在发布新文章时**自动生成标签；编辑已发布文章时不会重新生成，避免覆盖人工调整过的标签。
+1. 将插件文件夹命名为 `AutoTags`，上传到 Typecho 的 `/usr/plugins/` 目录。
+2. 在 Typecho 后台激活插件，打开插件设置。
+3. 选择生成标签使用的模型，填写对应的 API Key，并保存设置。
 
-## 安装方法
+从旧版本升级时，默认继续使用 DeepSeek，原有 `deepseekApiKey` 配置项保持不变。若要切换到 MiniMax，请选择 MiniMax 并填写 MiniMax API Key。两个提供方的 Key 分开保存，只有所选模型的 Key 会用于请求。
 
-1. 下载插件压缩包并解压
-2. 将解压后的文件夹重命名为 `AutoTags`
-3. 将文件夹上传到 Typecho 的插件目录 `/usr/plugins/`
-4. 在 Typecho 后台激活插件
+## 设置
 
-## 配置说明
+- **模型**：`DeepSeek Flash (V4.1)` 或 `MiniMax-M3.1-Flash`，默认 DeepSeek。
+- **DeepSeek API Key**：选择 DeepSeek 时使用。
+- **MiniMax API Key**：选择 MiniMax 时使用。
+- **文章正文提取内容长度**：默认 333 字符。输入须为整数；长度越大，输入 token 用量通常越高。
+- **编辑文章时是否重新生成标签**：默认否。设为是后，编辑已有标签的文章时会重新生成标签。
 
-1. 激活插件后，进入插件设置页面
-2. 输入您的 DeepSeek API Key
-3. 设置内容长度（字符数）：须为整数；内容长度越大，消耗的 API token 越多，默认 333 字符
-4. 设置「编辑文章时是否重新生成标签」：默认为否，编辑已发布文章时不会重新生成标签，避免覆盖人工调整的标签；选择是则会在编辑时清空旧标签并重新生成
-5. 可以通过修改插件 `$prompt` 变量来调整标签生成规则及标签数量：
-   - 编辑 `Plugin.php` 中的 `generateTags` 方法
-   - 修改 `$prompt` 变量内容
-6. 点击保存设置（v1.4.8 起设置页可正常保存）
+若需调整标签数量或规则，可修改 `Plugin.php` 的 `generateTags()` 中的 `$prompt`。
 
-## 使用示例
+## 工作方式
 
-插件激活并配置后，在发布新文章时会自动执行以下操作：
+- 发布文章且未手动添加标签时，插件自动生成标签。已有标签时，默认保留原标签且不调用 API。
+- 开启“编辑文章时是否重新生成标签”后，插件先等待模型返回有效标签，再替换旧标签。API 请求失败或没有生成标签时，旧标签保留。
+- 替换标签时只处理标签关系，不删除文章分类。
+- 钩子为 Typecho 的 `Widget_Contents_Post_Edit::finishPublish`。
 
-1. 提取文章标题和前 N 个字符的正文内容
-2. 发送到 DeepSeek API 进行分析
-3. 获取返回的关键词作为标签
-4. 自动将标签添加到文章中
+## 模型与接口
 
-## 行为说明
+| 提供方 | 模型 ID | 接口 | 请求设置 |
+| --- | --- | --- | --- |
+| DeepSeek | `deepseek-flash` | `https://api.deepseek.com/chat/completions` | 非流式；关闭 thinking；`max_tokens=256` |
+| MiniMax | `MiniMax-M3.1-Flash` | `https://api.minimax.cn/anthropic/v1/messages` | 非流式；`output_config.effort=low`；`max_tokens=2048` |
 
-- **新发布文章**：若未手动添加标签，则自动生成；若已手动添加，则保留手动标签不会被覆盖。
-- **编辑已发布文章**：取决于"编辑文章时是否重新生成标签"配置。默认为否，不会调用 API、不会修改任何标签；设置为是时，会先清空旧标签再重新生成。
-- 钩子基于 Typecho 的 `Widget_Contents_Post_Edit::finishPublish`（仅在发布时触发）。
+MiniMax-M3.1-Flash 强制开启 thinking，思考 token 计入 `max_tokens`；因此插件使用低思考档位，并只读取响应中的 `text` 内容块。DeepSeek 官方当前推荐使用 `deepseek-flash`，该 ID 对应 DeepSeek-V4.1-Flash-1017。旧 `deepseek-v4-flash` 名称仍可请求，但对应的旧模型已退役。
+
+接口依据：[MiniMax Anthropic API 文档](https://platform.minimax.cn/docs/api-reference/text-anthropic-api)、[DeepSeek 入门文档](https://api-docs.deepseek.com/)、[DeepSeek Chat Completions 文档](https://api-docs.deepseek.com/api/create-chat-completion)。
 
 ## 注意事项
 
-1. 需要有效的 DeepSeek API Key 才能使用
-2. API 调用可能会受到网络状况影响
-3. DeepSeek API 需要自行注册和配置，并且DeepSeek API需要支付一定的费用，请熟知
-4. 当前使用的模型为 `deepseek-v4-flash`，官方将在 2026/07/24 弃用 `deepseek-chat` / `deepseek-reasoner`
-
-## todo
-
-- [ ] 接入其他AI模型
-- [ ] 支持自定义 prompt
+- 需要自行在所选提供方获取有效 API Key；调用可能产生费用。
+- 服务器需能访问所选提供方的 HTTPS 接口，并安装 PHP cURL 和 mbstring 扩展。
+- API 失败信息记录在 PHP 错误日志中；日志不会记录 API Key 或文章内容。
 
 ## 更新日志
 
+### v1.5.0 (2026-10-20)
+
+- 新增后台模型选择与独立的 MiniMax API Key，保留原有 DeepSeek API Key 和默认选择。
+- 接入 `MiniMax-M3.1-Flash` 的 Anthropic 兼容接口，适配 thinking 与文本块响应。
+- 将 DeepSeek 模型 ID 更新为官方推荐的 `deepseek-flash`，限制标签任务的生成 token。
+- API 失败时保留原标签；重新生成只清除标签关系，不影响分类。
+- 恢复 HTTPS 证书校验，增加请求失败和无效响应的错误日志。
+
 ### v1.4.8 (2026-07-17)
 
-- 修复：插件设置页保存时报 500、配置无法写入的问题。原因是 `contentLength` 使用了 Typecho 不存在的校验规则 `numeric`，提交表单时会触发致命错误；已改为官方支持的 `isInteger`。
+- 修复设置页 `contentLength` 校验规则导致的保存失败。
 
 ### v1.4.7 (2026-07-09)
 
-- 修复：补齐 README 中声称但代码中缺失的"编辑文章时是否重新生成标签"配置项，现在通过 `regenerateOnEdit` 单选框控制，默认为否。
-- 修复：移除死代码，`clearTags()` 现在会在 `regenerateOnEdit` 设置为"是"且文章已有标签时被正确调用。
-- 修复：`clearTags()` 与 `addTag()` 中拼接 SQL 的 `$mid` / `$cid` 统一 `intval` 强转，消除潜在注入风险。
-- 修复：`contentLength` 表单新增 `numeric` 校验规则，并在代码中 `intval` 兜底，非法值回退为默认 333。
+- 增加编辑文章时是否重新生成标签的设置。
 
 ### v1.4.6 (2026-06-17)
 
-- 替换DeepSeek模型：将deepseek-chat更换为deepseek-v4-flash，原模型deepseek-chat将于2026/07/24弃用。
-- 替换DeepSeek api url：将deepseek api url替换为官方最新地址。
-- 修复：编辑文章时不再重复生成标签，通过检查文章是否已有标签来判断是否为新发布文章。
-- 新增配置项：添加"编辑文章时是否重新生成标签"选项，默认为否。
-- 优化：改进AI提示词，限制标签为2-6个字的中文词语，避免生成单字标签。
-- 优化：API 请求显式禁用思考模式（`thinking.type = disabled`）。
+- 调整 DeepSeek 接口、标签生成提示词及文章编辑行为。

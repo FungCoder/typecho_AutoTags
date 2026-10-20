@@ -1,10 +1,10 @@
 <?php
 
 /**
- * AutoTags 通过DeepSeek API自动生成文章标签插件
+ * AutoTags 通过 DeepSeek 或 MiniMax API 自动生成文章标签插件
  * @package AutoTags
  * @author 风之翼灵'BLog
- * @version 1.4.8
+ * @version 1.5.0
  * @link http://www.fungj.com
  */
 class AutoTags_Plugin implements Typecho_Plugin_Interface
@@ -44,8 +44,25 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
      */
     public static function config(Typecho_Widget_Helper_Form $form)
     {
+        $modelProvider = new Typecho_Widget_Helper_Form_Element_Radio(
+            'modelProvider',
+            array(
+                'deepseek' => 'DeepSeek Flash (V4.1)',
+                'minimax' => 'MiniMax-M3.1-Flash',
+            ),
+            'deepseek',
+            _t('生成标签使用的模型'),
+            _t('升级后默认继续使用 DeepSeek；仅需填写所选模型对应的 API Key')
+        );
+        $form->addInput($modelProvider);
+
         $deepseekApiKey = new Typecho_Widget_Helper_Form_Element_Text('deepseekApiKey', NULL, '', _t('DeepSeek API Key'));
         $form->addInput($deepseekApiKey);
+
+        $minimaxApiKey = new Typecho_Widget_Helper_Form_Element_Text(
+            'minimaxApiKey', NULL, '', _t('MiniMax API Key')
+        );
+        $form->addInput($minimaxApiKey);
 
         $contentLength = new Typecho_Widget_Helper_Form_Element_Text('contentLength', NULL, '333', _t('文章正文提取内容长度（字符数），内容长度越大，消耗token数量会越多，请自行选择，默认333字符'));
         $contentLength->addRule('isInteger', _t('内容长度请填写数字'));
@@ -80,9 +97,15 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
     {
         $options = Typecho_Widget::widget('Widget_Options');
         $pluginConfig = $options->plugin('AutoTags');
-        $deepseekApiKey = $pluginConfig->deepseekApiKey;
+        $provider = isset($pluginConfig->modelProvider)
+            ? $pluginConfig->modelProvider : 'deepseek';
+        if ($provider !== 'deepseek' && $provider !== 'minimax') {
+            return;
+        }
+        $apiKey = $provider === 'minimax'
+            ? $pluginConfig->minimaxApiKey : $pluginConfig->deepseekApiKey;
 
-        if (empty($deepseekApiKey)) {
+        if (empty($apiKey)) {
             return;
         }
 
@@ -104,7 +127,6 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
             if ($pluginConfig->regenerateOnEdit !== '1') {
                 return;
             }
-            self::clearTags($cid);
         }
 
         $title = $contents['title'];
@@ -116,17 +138,25 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
 
         $prompt = "请根据以下文章标题和正文内容，提取关键词作为文章标签。要求：1.标签必须是2-6个字的有效词语；2.标签含义不能重复；3.标签必须是能概括文章标题及正文的关键词；4.随机获取5至10个标签，用逗号','分隔。不要输出任何解释，只输出标签。\n\n标题：{$title}\n\n正文：{$text}";
 
-        $deepseekResponse = self::callDeepSeekApi($deepseekApiKey, $prompt);
-        if (empty($deepseekResponse)) {
+        $modelResponse = self::callModelApi($provider, $apiKey, $prompt);
+        if (empty($modelResponse)) {
             return;
         }
 
-        $tags = explode(',', $deepseekResponse);
+        $tags = preg_split('/[,，、\r\n]+/u', $modelResponse);
+        if ($tags === false) {
+            return;
+        }
         $tags = array_map('trim', $tags);
         $tags = array_filter($tags);
+        $tags = array_unique($tags);
 
         if (empty($tags)) {
             return;
+        }
+
+        if ($tagCount > 0) {
+            self::clearTags($cid);
         }
 
         foreach ($tags as $tag) {
@@ -135,21 +165,25 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
     }
 
     /**
-     * 调用 DeepSeek API
+     * 调用所选模型的 API
      * @access private
+     * @param string $provider 模型提供方
      * @param string $apiKey API Key
      * @param string $prompt Prompt
      * @return string
      */
-    private static function callDeepSeekApi($apiKey, $prompt)
+    private static function callModelApi($provider, $apiKey, $prompt)
     {
-        $url = 'https://api.deepseek.com/chat/completions';
+        $isMinimax = $provider === 'minimax';
+        $url = $isMinimax
+            ? 'https://api.minimax.cn/anthropic/v1/messages'
+            : 'https://api.deepseek.com/chat/completions';
         $headers = array(
             'Authorization: Bearer ' . $apiKey,
             'Content-Type: application/json',
         );
         $data = array(
-            'model' => 'deepseek-v4-flash',
+            'model' => $isMinimax ? 'MiniMax-M3.1-Flash' : 'deepseek-flash',
             'messages' => array(
                 array(
                     'role' => 'user',
@@ -157,27 +191,64 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
                 ),
             ),
             'stream' => false,
-            'thinking' => array('type' => 'disabled'),
         );
+        if ($isMinimax) {
+            $data['max_tokens'] = 2048;
+            $data['output_config'] = array('effort' => 'low');
+        } else {
+            $data['thinking'] = array('type' => 'disabled');
+            $data['max_tokens'] = 256;
+        }
 
         $ch = curl_init();
+        if ($ch === false) {
+            error_log('AutoTags: 无法初始化 API 请求');
+            return '';
+        }
+        $requestBody = json_encode($data);
+        if ($requestBody === false) {
+            curl_close($ch);
+            error_log('AutoTags: 无法编码 API 请求');
+            return '';
+        }
         curl_setopt($ch, CURLOPT_URL, $url);
         curl_setopt($ch, CURLOPT_POST, true);
         curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_TIMEOUT, $isMinimax ? 90 : 30);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $requestBody);
         $response = curl_exec($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
         curl_close($ch);
 
         if ($response === false || $httpCode !== 200) {
+            error_log('AutoTags: API 请求失败，HTTP ' . $httpCode . '，' . $curlError);
             return '';
         }
 
         $result = json_decode($response, true);
+        if (!is_array($result)) {
+            error_log('AutoTags: API 返回了无效 JSON');
+            return '';
+        }
+        if ($isMinimax) {
+            if (isset($result['stop_reason']) && $result['stop_reason'] === 'max_tokens') {
+                error_log('AutoTags: MiniMax 输出达到 token 上限');
+                return '';
+            }
+            if (empty($result['content']) || !is_array($result['content'])) {
+                return '';
+            }
+            $texts = array();
+            foreach ($result['content'] as $block) {
+                if (isset($block['type'], $block['text']) && $block['type'] === 'text') {
+                    $texts[] = $block['text'];
+                }
+            }
+            return implode('', $texts);
+        }
         if (isset($result['choices'][0]['message']['content'])) {
             return $result['choices'][0]['message']['content'];
         }
@@ -199,12 +270,20 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
 
         $cid = intval($cid);
 
-        $tags = Typecho_Db::get()->fetchAll(Typecho_Db::get()->select('mid')->from('table.relationships')->where('cid = ?', $cid));
-
-        Typecho_Db::get()->query(Typecho_Db::get()->delete('table.relationships')->where('cid = ?', $cid));
+        $tags = Typecho_Db::get()->fetchAll(
+            Typecho_Db::get()->select('table.relationships.mid')
+                ->from('table.relationships')
+                ->join('table.metas', 'table.relationships.mid = table.metas.mid')
+                ->where('table.relationships.cid = ?', $cid)
+                ->where('table.metas.type = ?', 'tag')
+        );
 
         foreach ($tags as $tag) {
             $mid = intval($tag['mid']);
+            Typecho_Db::get()->query(
+                Typecho_Db::get()->delete('table.relationships')
+                    ->where('cid = ?', $cid)->where('mid = ?', $mid)
+            );
             Typecho_Db::get()->query("UPDATE " . Typecho_Db::get()->getPrefix() . "metas SET count = count - 1 WHERE mid = " . $mid . " AND count > 0");
         }
     }
@@ -224,7 +303,10 @@ class AutoTags_Plugin implements Typecho_Plugin_Interface
 
         $cid = intval($cid);
 
-        $existMeta = Typecho_Db::get()->fetchObject(Typecho_Db::get()->select('mid')->from('table.metas')->where('name = ?', $tag));
+        $existMeta = Typecho_Db::get()->fetchObject(
+            Typecho_Db::get()->select('mid')->from('table.metas')
+                ->where('name = ?', $tag)->where('type = ?', 'tag')
+        );
         if (empty($existMeta)) {
             $insertId = Typecho_Db::get()->query(Typecho_Db::get()->insert('table.metas')->rows(array(
                 'name' => $tag,
